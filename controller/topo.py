@@ -7,13 +7,16 @@ from mininet.log import setLogLevel
 
 class SentinetTopo(Topo):
     """
+    Sentinet Network Topology
+    =========================
+    
                          [s1] (Core Switch)
-                        / |  \
-                      /   |    \
+                        / |  \\
+                      /   |    \\
                     s2   s4     s5
-                   /|     |      |\
+                   /|     |      |\\
                  s3 h4   h5     h6 h7
-                /|\              |
+                /|\\              |
               h1 h2 h3          h8
                    (attacker)
     
@@ -23,6 +26,17 @@ class SentinetTopo(Topo):
     - h5 → h6: s4 → s1 → s5 (3 hops)
     
     This provides varied path lengths for Q-Learning without loops.
+    
+    ⚠️  CRITICAL SYNCHRONIZATION WARNING ⚠️
+    ========================================
+    The order of hosts and links here MUST EXACTLY MATCH the TOPOLOGY 
+    constant in config.py. The Controller uses config.py to calculate 
+    port numbers. If you add/remove/reorder ANY links or hosts here:
+    
+    1. Update TOPOLOGY['hosts'] in config.py to match host order
+    2. Update TOPOLOGY['links'] in config.py to match link order
+    
+    Failure to sync will cause packets to route to WRONG PORTS!
     """
     def build(self):
         # ============================================
