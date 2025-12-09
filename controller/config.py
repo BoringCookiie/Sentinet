@@ -8,11 +8,11 @@ Modify these values to change system behavior.
 # =============================================================================
 # BACKEND CONNECTION
 # =============================================================================
-# WebSocket server address where the Backend API listens
-# The Backend team should provide these values
+# REST API server address where the FastAPI Backend listens
+# Backend runs on port 8000 by default
 BACKEND_HOST = "localhost"
-BACKEND_PORT = 8765
-BACKEND_ENABLED = False  # Set to True when Backend is ready
+BACKEND_PORT = 8000
+BACKEND_ENABLED = True  # Backend integration enabled
 
 # =============================================================================
 # CONTROLLER SETTINGS
