@@ -30,12 +30,13 @@ FLOW_HARD_TIMEOUT = 300
 # AI SETTINGS
 # =============================================================================
 # Enable/disable AI modules (set to False for testing without AI)
-SENTINEL_ENABLED = False  # Security AI - set True when model is ready
-NAVIGATOR_ENABLED = False  # Routing AI - set True when model is ready
+SENTINEL_ENABLED = True   # Security AI - DDoS detection
+NAVIGATOR_ENABLED = True  # Routing AI - Q-Learning path optimization
 
-# Path to trained model files (Security team provides these)
+# Path to trained model files
 SENTINEL_MODEL_PATH = "../ai_models/sentinel_model.joblib"
-NAVIGATOR_MODEL_PATH = "../ai_models/navigator_model.joblib"
+SENTINEL_CLASSIFIER_PATH = "../ai_models/sentinel_classifier.joblib"
+NAVIGATOR_MODEL_PATH = "../ai_models/navigator_model.joblib"  # Q-table saved here
 
 # =============================================================================
 # DEMO / PRESENTATION SETTINGS

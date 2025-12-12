@@ -54,12 +54,18 @@ class SentinetController(app_manager.RyuApp):
         self.mac_to_port = {}      # {dpid: {mac: port}}
         self.datapaths = {}        # {dpid: datapath} - connected switches
         self.flow_stats = {}       # {dpid: [flow_stats]} - latest stats per switch
+        self.prev_stats = {}       # {(dpid, src, dst): (packets, bytes, time)} - for delta calculation
         
         # =================================================================
         # AI Models
         # =================================================================
         self.sentinel = SentinelAI()
         self.navigator = NavigatorAI()
+        
+        # Initialize Navigator with topology (for Q-Learning routing)
+        if NAVIGATOR_ENABLED:
+            self.navigator.initialize_topology(TOPOLOGY)
+        
         self.logger.info(f"[AI] Sentinel: {self.sentinel.get_status()}")
         self.logger.info(f"[AI] Navigator: {self.navigator.get_status()}")
         
@@ -120,6 +126,9 @@ class SentinetController(app_manager.RyuApp):
                 # Send topology to backend when first switch connects
                 if len(self.datapaths) == 1:
                     self._send_topology()
+                    # Re-initialize Navigator with topology (in case it failed earlier)
+                    if NAVIGATOR_ENABLED and not self.navigator.brain:
+                        self.navigator.initialize_topology(TOPOLOGY)
                     
         elif ev.state == DEAD_DISPATCHER:
             if dpid in self.datapaths:
@@ -178,7 +187,13 @@ class SentinetController(app_manager.RyuApp):
         # Install flow if we know the destination
         if out_port != ofproto.OFPP_FLOOD:
             match = parser.OFPMatch(in_port=in_port, eth_dst=dst_mac, eth_src=src_mac)
-            self._add_flow(datapath, 1, match, actions)
+            
+            # Use short idle timeout for Navigator-routed flows (adaptive routing)
+            # This forces re-evaluation of path when traffic patterns change
+            if NAVIGATOR_ENABLED:
+                self._add_flow(datapath, 1, match, actions, idle_timeout=5)
+            else:
+                self._add_flow(datapath, 1, match, actions)
         
         # Send packet out
         data = None
@@ -420,9 +435,49 @@ class SentinetController(app_manager.RyuApp):
         host_flows = [flow for flow in body if flow.priority == 1]
         
         # Format flows for processing
+        # Format flows for processing
         formatted_flows = []
         for stat in host_flows:
             flow_data = format_flow_for_ai(stat, dpid, timestamp)
+            
+            # --- FIX: Calculate Instant PPS (Delta) instead of Lifetime Average ---
+            
+            # Key to identify the unique flow
+            src = stat.match['eth_src']
+            dst = stat.match['eth_dst']
+            key = (dpid, src, dst)
+            
+            current_packets = stat.packet_count
+            current_bytes = stat.byte_count
+            current_time = timestamp
+            
+            pps = 0.0
+            bps = 0.0
+            
+            if key in self.prev_stats:
+                prev_packets, prev_bytes, prev_time = self.prev_stats[key]
+                
+                delta_packets = current_packets - prev_packets
+                delta_bytes = current_bytes - prev_bytes
+                delta_time = current_time - prev_time
+                
+                if delta_time > 0:
+                    pps = delta_packets / delta_time
+                    bps = (delta_bytes * 8) / delta_time
+                    
+                    # Ensure non-negative (counters might vary if switch sends out-of-order stats, though unlikely in single thread)
+                    pps = max(0.0, pps)
+                    bps = max(0.0, bps)
+            
+            # Update history
+            self.prev_stats[key] = (current_packets, current_bytes, current_time)
+            
+            # Override the "Lifetime" stats from format_flow_for_ai
+            flow_data['pps'] = pps
+            flow_data['bps'] = bps
+            
+            # -------------------------------------------------------------
+            
             formatted_flows.append(flow_data)
             
             # Run through Sentinel AI
@@ -433,6 +488,11 @@ class SentinetController(app_manager.RyuApp):
         
         # Send to backend
         self._send_stats_to_backend(dpid, formatted_flows)
+        
+        # Update Navigator AI with link utilization (for Q-Learning)
+        if NAVIGATOR_ENABLED:
+            link_stats = self._calculate_link_utilization()
+            self.navigator.update_link_stats(link_stats)
         
         # Log to CSV if enabled
         if CSV_LOGGING:
@@ -463,9 +523,23 @@ class SentinetController(app_manager.RyuApp):
             return
         
         # Run prediction
-        is_attack = self.sentinel.predict(pps, bps, avg_pkt_size)
+        prediction_result = self.sentinel.predict(pps, bps, avg_pkt_size)
+        
+        # Handle Dictionary vs Boolean return
+        is_attack = False
+        attack_type = "Unknown"
+        confidence = 0.0
+
+        if isinstance(prediction_result, dict):
+            is_attack = prediction_result.get('is_threat', False)
+            attack_type = prediction_result.get('attack_type', "DDoS")
+            confidence = prediction_result.get('confidence', 0.0)
+        else:
+            is_attack = bool(prediction_result)
         
         if is_attack:
+            # Add the type to flow_data so the handler can print it
+            flow_data['attack_type'] = attack_type 
             self._handle_attack_detected(flow_data)
     
     def _handle_attack_detected(self, flow_data: dict):
@@ -486,7 +560,7 @@ class SentinetController(app_manager.RyuApp):
         # Set alert cooldown
         self.active_alerts[alert_key] = time.time() + ALERT_COOLDOWN
         
-        self.logger.error(f"[ATTACK] DDoS detected: {src_mac} -> {dst_mac}")
+        self.logger.error(f"[ATTACK] {flow_data.get('attack_type', 'DDoS')} detected: {src_mac} -> {dst_mac}")
         self.logger.error(f"[ATTACK] Stats: PPS={flow_data['pps']:.2f}, BPS={flow_data['bps']:.2f}")
         
         # Block the flow

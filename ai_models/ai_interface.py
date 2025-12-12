@@ -14,9 +14,11 @@ class SentinelAI:
         
         self.anomaly_path = os.path.join(self.base_path, 'sentinel_model.joblib')
         self.classifier_path = os.path.join(self.base_path, 'sentinel_classifier.joblib')
+        self.scaler_path = os.path.join(self.base_path, 'sentinel_scaler.joblib')
         
         self.anomaly_model = None
         self.classifier_model = None
+        self.scaler = None
         self.initialized = False  
         self._load_models()
 
@@ -30,6 +32,10 @@ class SentinelAI:
 
             self.anomaly_model = joblib.load(self.anomaly_path)
             self.classifier_model = joblib.load(self.classifier_path)
+            
+            # Load scaler if available (for normalized anomaly detection)
+            if os.path.exists(self.scaler_path):
+                self.scaler = joblib.load(self.scaler_path)
             
             self.initialized = True  
             print("[INFO] Sentinel AI: Systems Online. Models loaded successfully.")
@@ -63,16 +69,22 @@ class SentinelAI:
         }])
 
         try:
-            anomaly_score = self.anomaly_model.predict(features)[0]
+            # Run anomaly detection (with normalization if scaler available)
+            if self.scaler is not None:
+                features_scaled = self.scaler.transform(features)
+                anomaly_prediction = self.anomaly_model.predict(features_scaled)[0]
+            else:
+                anomaly_prediction = self.anomaly_model.predict(features)[0]
             
+            # Run classification
             attack_type = self.classifier_model.predict(features)[0]
-            
             probs = self.classifier_model.predict_proba(features)
             confidence = np.max(probs)
-
+            
+            # Determine threat status (OR logic: either model can trigger)
             is_threat = False
             
-            if anomaly_score == -1:
+            if anomaly_prediction == -1:
                 is_threat = True
             
             if attack_type != "Normal":

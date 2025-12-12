@@ -15,6 +15,7 @@ import logging
 try:
     import joblib
     import numpy as np
+    import pandas as pd
     ML_AVAILABLE = True
 except ImportError:
     ML_AVAILABLE = False
@@ -23,62 +24,99 @@ except ImportError:
 from config import (
     SENTINEL_ENABLED, NAVIGATOR_ENABLED,
     SENTINEL_MODEL_PATH, NAVIGATOR_MODEL_PATH,
+    SENTINEL_CLASSIFIER_PATH,
     ATTACK_PPS_THRESHOLD, ATTACK_BPS_THRESHOLD
 )
 
 
 class SentinelAI:
     """
-    Security AI - DDoS Detection using Isolation Forest
+    Security AI - DDoS Detection using Isolation Forest AND Random Forest Classifier.
     
     Input: Flow statistics (pps, bps, avg_pkt_size)
-    Output: True if attack detected, False if normal
-    
-    Usage:
-        sentinel = SentinelAI()
-        is_attack = sentinel.predict(pps=5000, bps=500000, avg_pkt_size=64)
+    Output: Dictionary with threat status and attack type.
     """
     
     def __init__(self):
-        self.model = None
+        self.anomaly_model = None
+        self.classifier_model = None
         self.enabled = SENTINEL_ENABLED and ML_AVAILABLE
         
         if self.enabled:
-            self._load_model()
+            self._load_models()
     
-    def _load_model(self):
-        """Load the trained Isolation Forest model."""
+    def _load_models(self):
+        """Load both Anomaly and Classifier models."""
         try:
+            # Load Anomaly Detector
             if os.path.exists(SENTINEL_MODEL_PATH):
-                self.model = joblib.load(SENTINEL_MODEL_PATH)
-                logging.info(f"[SENTINEL] Model loaded from {SENTINEL_MODEL_PATH}")
+                self.anomaly_model = joblib.load(SENTINEL_MODEL_PATH)
+                logging.info(f"[SENTINEL] Anomaly Model loaded from {SENTINEL_MODEL_PATH}")
             else:
-                logging.warning(f"[SENTINEL] Model not found at {SENTINEL_MODEL_PATH}")
+                logging.warning(f"[SENTINEL] Anomaly Model not found at {SENTINEL_MODEL_PATH}")
                 self.enabled = False
+
+            # Load Classifier (Optional but recommended)
+            if os.path.exists(SENTINEL_CLASSIFIER_PATH):
+                self.classifier_model = joblib.load(SENTINEL_CLASSIFIER_PATH)
+                logging.info(f"[SENTINEL] Classifier Model loaded from {SENTINEL_CLASSIFIER_PATH}")
+            else:
+                logging.warning(f"[SENTINEL] Classifier Model not found at {SENTINEL_CLASSIFIER_PATH}")
+                # We can still run with just anomaly detection, but let's stick to enabled flag
+                
         except Exception as e:
-            logging.error(f"[SENTINEL] Failed to load model: {e}")
+            logging.error(f"[SENTINEL] Failed to load models: {e}")
             self.enabled = False
     
-    def predict(self, pps: float, bps: float, avg_pkt_size: float) -> bool:
+    def predict(self, pps: float, bps: float, avg_pkt_size: float) -> dict:
         """
         Predict if the given flow statistics indicate an attack.
+        Uses both Anomaly Detection (Isolation Forest) and Classification (Random Forest).
         
-        Args:
-            pps: Packets per second
-            bps: Bytes per second
-            avg_pkt_size: Average packet size in bytes
-            
-        Returns:
-            True if attack detected, False otherwise
+        Logic: Alarm if EITHER model detects a threat.
         """
-        if self.enabled and self.model is not None:
-            # Use trained model
-            features = np.array([[pps, bps, avg_pkt_size]])
-            prediction = self.model.predict(features)
-            return prediction[0] == -1  # -1 = anomaly in sklearn
-        else:
-            # Fallback: Simple threshold-based detection
-            return self._fallback_predict(pps, bps)
+        if not self.enabled:
+            # Fallback
+            is_threat = self._fallback_predict(pps, bps)
+            return {"is_threat": is_threat, "attack_type": "Fallback Threshold" if is_threat else "Normal"}
+
+        try:
+            features = pd.DataFrame([{'pps': pps, 'bps': bps, 'avg_pkt_size': avg_pkt_size}])
+            
+            # 1. Anomaly Detection (-1 is anomaly)
+            anomaly_score = 1
+            if self.anomaly_model:
+                anomaly_score = self.anomaly_model.predict(features)[0]
+            
+            # 2. Classification
+            attack_type = "Normal"
+            confidence = 0.0
+            if self.classifier_model:
+                attack_type = self.classifier_model.predict(features)[0]
+                probs = self.classifier_model.predict_proba(features)
+                confidence = np.max(probs)
+            
+            # 3. Decision Logic (OR Gate)
+            is_threat = False
+            final_type = "Normal"
+            
+            if anomaly_score == -1:
+                is_threat = True
+                final_type = "Unknown Anomaly"
+            
+            if attack_type != "Normal":
+                is_threat = True
+                final_type = attack_type # Specific type overrides generic "Unknown"
+            
+            return {
+                "is_threat": is_threat,
+                "attack_type": final_type,
+                "confidence": round(float(confidence), 4)
+            }
+
+        except Exception as e:
+            logging.error(f"[SENTINEL] Prediction error: {e}")
+            return {"is_threat": False, "attack_type": "Error"}
     
     def _fallback_predict(self, pps: float, bps: float) -> bool:
         """Simple threshold-based attack detection when AI is unavailable."""
@@ -95,8 +133,9 @@ class SentinelAI:
         return {
             "name": "Sentinel",
             "enabled": self.enabled,
-            "model_loaded": self.model is not None,
-            "mode": "AI" if self.enabled else "Threshold Fallback"
+            "anomaly_loaded": self.anomaly_model is not None,
+            "classifier_loaded": self.classifier_model is not None,
+            "mode": "Dual-Model AI" if self.enabled else "Threshold Fallback"
         }
 
 
@@ -104,73 +143,198 @@ class NavigatorAI:
     """
     Routing AI - Path Optimization using Q-Learning
     
+    This class wraps the NavigatorBrain Q-Learning engine and provides
+    a clean interface for the controller.
+    
     Input: Source MAC, Destination MAC, Network Graph
     Output: Optimal path as list of switch IDs
     
     Usage:
         navigator = NavigatorAI()
+        navigator.initialize_topology(topology_dict)
         path = navigator.get_path("00:00:00:00:00:01", "00:00:00:00:00:07", graph)
     """
     
     def __init__(self):
-        self.model = None
+        self.brain = None
         self.enabled = NAVIGATOR_ENABLED and ML_AVAILABLE
+        self.topology = None
+        self.host_to_switch = {}  # MAC -> switch_id mapping
         
         if self.enabled:
-            self._load_model()
+            self._initialize_brain()
     
-    def _load_model(self):
-        """Load the trained routing model."""
+    def _initialize_brain(self):
+        """Initialize the Q-Learning brain."""
         try:
-            if os.path.exists(NAVIGATOR_MODEL_PATH):
-                self.model = joblib.load(NAVIGATOR_MODEL_PATH)
-                logging.info(f"[NAVIGATOR] Model loaded from {NAVIGATOR_MODEL_PATH}")
+            # Import the brain module
+            import sys
+            ai_models_path = os.path.join(os.path.dirname(__file__), '..', 'ai_models')
+            if ai_models_path not in sys.path:
+                sys.path.insert(0, ai_models_path)
+            
+            from navigator_brain import NavigatorBrain
+            
+            self.brain = NavigatorBrain(
+                learning_rate=0.1,
+                discount_factor=0.9,
+                epsilon=0.1,  # 10% exploration
+                epsilon_decay=0.995,
+                min_epsilon=0.01
+            )
+            
+            # Try to load saved model
+            model_path = NAVIGATOR_MODEL_PATH
+            if os.path.exists(model_path):
+                self.brain.load(model_path)
+                logging.info(f"[NAVIGATOR] Brain loaded from {model_path}")
             else:
-                logging.warning(f"[NAVIGATOR] Model not found at {NAVIGATOR_MODEL_PATH}")
-                self.enabled = False
+                logging.info("[NAVIGATOR] Brain initialized (no saved model)")
+                
         except Exception as e:
-            logging.error(f"[NAVIGATOR] Failed to load model: {e}")
+            logging.error(f"[NAVIGATOR] Failed to initialize brain: {e}")
             self.enabled = False
     
-    def get_path(self, src_mac: str, dst_mac: str, network_graph: dict) -> list:
+    def initialize_topology(self, topology: dict):
+        """
+        Initialize the navigator with network topology.
+        
+        Must be called before get_path().
+        
+        Args:
+            topology: Dictionary matching config.py TOPOLOGY format
+        """
+        if not self.enabled or self.brain is None:
+            return
+        
+        self.topology = topology
+        self.brain.initialize_from_topology(topology)
+        
+        # Build host-to-switch mapping
+        for host in topology.get('hosts', []):
+            mac = host.get('mac', '')
+            switch = host.get('switch', '')
+            if mac and switch:
+                self.host_to_switch[mac] = switch
+        
+        logging.info(f"[NAVIGATOR] Topology initialized: {len(self.host_to_switch)} hosts")
+    
+    def update_link_stats(self, link_stats: dict):
+        """
+        Update link weights based on live traffic.
+        
+        Called by controller after collecting flow stats.
+        
+        Args:
+            link_stats: Dict mapping (from_sw, to_sw) -> {'bps': float, 'bandwidth': float}
+        """
+        if not self.enabled or self.brain is None:
+            return
+        
+        self.brain.update_link_weights(link_stats)
+    
+    def get_path(self, src_mac: str, dst_mac: str, network_graph: dict = None) -> list:
         """
         Calculate optimal path from source to destination.
         
         Args:
             src_mac: Source MAC address
             dst_mac: Destination MAC address
-            network_graph: Current network topology with link weights
+            network_graph: Optional - ignored (using internal brain state)
             
         Returns:
             List of switch IDs representing the path, e.g., ["s3", "s2", "s1", "s5"]
         """
-        if self.enabled and self.model is not None:
-            # Use trained model (implementation depends on routing team)
-            return self._ai_path(src_mac, dst_mac, network_graph)
-        else:
-            # Fallback: Use simple shortest path (BFS)
+        if not self.enabled or self.brain is None:
             return self._fallback_path(src_mac, dst_mac, network_graph)
-    
-    def _ai_path(self, src_mac: str, dst_mac: str, network_graph: dict) -> list:
-        """AI-based path calculation. Routing team implements this."""
-        # Placeholder - routing team will implement Q-learning based selection
-        return self._fallback_path(src_mac, dst_mac, network_graph)
+        
+        # Get switches for the MAC addresses
+        src_switch = self.host_to_switch.get(src_mac)
+        dst_switch = self.host_to_switch.get(dst_mac)
+        
+        if not src_switch or not dst_switch:
+            logging.debug(f"[NAVIGATOR] Unknown MAC: src={src_mac}, dst={dst_mac}")
+            return self._fallback_path(src_mac, dst_mac, network_graph)
+        
+        # Use Q-Learning brain to find optimal path
+        path = self.brain.get_optimal_path(src_switch, dst_switch)
+        
+        if path:
+            logging.debug(f"[NAVIGATOR] Path: {src_mac} -> {dst_mac} via {path}")
+            return path
+        else:
+            return self._fallback_path(src_mac, dst_mac, network_graph)
     
     def _fallback_path(self, src_mac: str, dst_mac: str, network_graph: dict) -> list:
         """Simple BFS shortest path when AI is unavailable."""
-        # For now, return empty - controller will use default flooding
-        # Routing team can implement proper graph traversal here
         logging.debug(f"[NAVIGATOR-FALLBACK] Path request: {src_mac} -> {dst_mac}")
+        
+        # Use simple BFS if we have a graph
+        if network_graph and isinstance(network_graph, dict):
+            src_switch = self.host_to_switch.get(src_mac)
+            dst_switch = self.host_to_switch.get(dst_mac)
+            
+            if src_switch and dst_switch:
+                return self._bfs_path(src_switch, dst_switch, network_graph)
+        
         return []
+    
+    def _bfs_path(self, src: str, dst: str, graph: dict) -> list:
+        """BFS shortest path algorithm."""
+        if src == dst:
+            return [src]
+        
+        visited = {src}
+        queue = [[src]]
+        
+        while queue:
+            path = queue.pop(0)
+            current = path[-1]
+            
+            # Get neighbors
+            neighbors = graph.get(current, [])
+            if isinstance(neighbors, list):
+                for neighbor_info in neighbors:
+                    if isinstance(neighbor_info, dict):
+                        neighbor = neighbor_info.get('node', neighbor_info.get('neighbor', ''))
+                    else:
+                        neighbor = str(neighbor_info)
+                    
+                    if neighbor and neighbor not in visited:
+                        new_path = path + [neighbor]
+                        
+                        if neighbor == dst:
+                            return new_path
+                        
+                        visited.add(neighbor)
+                        queue.append(new_path)
+        
+        return []
+    
+    def save_model(self):
+        """Save the current Q-table to disk."""
+        if self.brain:
+            self.brain.save(NAVIGATOR_MODEL_PATH)
     
     def get_status(self) -> dict:
         """Return status information for debugging."""
+        if self.brain:
+            brain_status = self.brain.get_status()
+            return {
+                "name": "Navigator",
+                "enabled": self.enabled,
+                "brain_initialized": brain_status.get('initialized', False),
+                "epsilon": brain_status.get('epsilon', 0),
+                "paths_calculated": brain_status.get('paths_calculated', 0),
+                "mode": "Q-Learning AI" if self.enabled else "BFS Fallback"
+            }
         return {
             "name": "Navigator",
             "enabled": self.enabled,
-            "model_loaded": self.model is not None,
-            "mode": "AI" if self.enabled else "Default Flooding"
+            "model_loaded": False,
+            "mode": "Default Flooding"
         }
+
 
 
 # =============================================================================

@@ -10,7 +10,6 @@ venv/
 ENV/
 
 # Trained Models (Security team will provide)
-*.joblib
 *.pkl
 
 # IDE
