@@ -56,7 +56,7 @@ model = IsolationForest(
     contamination=0.01,  # Tight boundary for sensitive detection
     random_state=42
 )
-model.fit(X_scaled)
+model.fit(pd.DataFrame(X_scaled, columns=features))  # Fit with DataFrame to match predict input
 
 # Save both model and scaler
 print(f"[INFO] Saving model to {MODEL_PATH}...")

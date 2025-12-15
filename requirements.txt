@@ -1,25 +1,33 @@
 # Sentinet Dependencies
 # =====================
+# Corrected for Python 3.9 compatibility (fixed requests/urllib3 recursion issue)
 
 # SDN Controller Framework
-ryu>=4.34
+ryu==4.34
 
-# Network Utilities
-eventlet>=0.30.0
+# Network Utilities (required by Ryu)
+eventlet==0.30.2
 
-# AI/ML (optional - for trained models)
-scikit-learn>=1.0.0
-joblib>=1.1.0
-numpy>=1.21.0
+# AI/ML Libraries (Compatible with Python 3.9)
+scikit-learn==1.5.2
+joblib==1.4.2
+numpy==1.26.4
+pandas==2.2.3
 
 # Backend Server (FastAPI)
-fastapi>=0.104.0
-uvicorn>=0.24.0
-sqlalchemy>=2.0.0
-pydantic>=2.0.0
+fastapi==0.115.6
+uvicorn==0.32.1
+websockets==13.1
+sqlalchemy==2.0.36
+pydantic==2.10.3
 
-# HTTP Client (for Controller -> Backend communication)
-requests>=2.28.0
+# HTTP Client (Downgraded for Python 3.9 compatibility)
+requests==2.31.0
+urllib3==1.26.18
 
 # Utilities
-PyYAML>=6.0
+PyYAML==6.0.2
+packaging==24.2
+python-dateutil==2.9.0.post0
+pytz==2024.2
+six==1.16.0

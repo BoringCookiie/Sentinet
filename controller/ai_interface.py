@@ -24,7 +24,7 @@ except ImportError:
 from config import (
     SENTINEL_ENABLED, NAVIGATOR_ENABLED,
     SENTINEL_MODEL_PATH, NAVIGATOR_MODEL_PATH,
-    SENTINEL_CLASSIFIER_PATH,
+    SENTINEL_CLASSIFIER_PATH, SENTINEL_SCALER_PATH,  # Add SENTINEL_SCALER_PATH
     ATTACK_PPS_THRESHOLD, ATTACK_BPS_THRESHOLD
 )
 
@@ -40,6 +40,7 @@ class SentinelAI:
     def __init__(self):
         self.anomaly_model = None
         self.classifier_model = None
+        self.scaler = None  # Add this
         self.enabled = SENTINEL_ENABLED and ML_AVAILABLE
         
         if self.enabled:
@@ -62,8 +63,15 @@ class SentinelAI:
                 logging.info(f"[SENTINEL] Classifier Model loaded from {SENTINEL_CLASSIFIER_PATH}")
             else:
                 logging.warning(f"[SENTINEL] Classifier Model not found at {SENTINEL_CLASSIFIER_PATH}")
-                # We can still run with just anomaly detection, but let's stick to enabled flag
-                
+        
+            # Load Scaler for Anomaly Model  # Add this block
+            if os.path.exists(SENTINEL_SCALER_PATH):
+                self.scaler = joblib.load(SENTINEL_SCALER_PATH)
+                logging.info(f"[SENTINEL] Scaler loaded from {SENTINEL_SCALER_PATH}")
+            else:
+                logging.warning(f"[SENTINEL] Scaler not found at {SENTINEL_SCALER_PATH}")
+                self.enabled = False
+            
         except Exception as e:
             logging.error(f"[SENTINEL] Failed to load models: {e}")
             self.enabled = False
@@ -83,12 +91,18 @@ class SentinelAI:
         try:
             features = pd.DataFrame([{'pps': pps, 'bps': bps, 'avg_pkt_size': avg_pkt_size}])
             
+            # Scale features for anomaly detection
+            if self.scaler:
+                features_scaled = pd.DataFrame(self.scaler.transform(features), columns=features.columns)
+            else:
+                features_scaled = features
+            
             # 1. Anomaly Detection (-1 is anomaly)
             anomaly_score = 1
             if self.anomaly_model:
-                anomaly_score = self.anomaly_model.predict(features)[0]
+                anomaly_score = self.anomaly_model.predict(features_scaled)[0]
             
-            # 2. Classification
+            # 2. Classification (uses raw features)
             attack_type = "Normal"
             confidence = 0.0
             if self.classifier_model:
@@ -160,6 +174,7 @@ class NavigatorAI:
         self.enabled = NAVIGATOR_ENABLED and ML_AVAILABLE
         self.topology = None
         self.host_to_switch = {}  # MAC -> switch_id mapping
+        self.save_counter = 0  # Counter for auto-saving Q-table
         
         if self.enabled:
             self._initialize_brain()
@@ -235,7 +250,7 @@ class NavigatorAI:
     
     def get_path(self, src_mac: str, dst_mac: str, network_graph: dict = None) -> list:
         """
-        Calculate optimal path from source to destination.
+        Get optimal path between two hosts using Q-Learning.
         
         Args:
             src_mac: Source MAC address
@@ -258,6 +273,11 @@ class NavigatorAI:
         
         # Use Q-Learning brain to find optimal path
         path = self.brain.get_optimal_path(src_switch, dst_switch)
+        
+        # Auto-save Q-table every 10 path calculations
+        self.save_counter += 1
+        if self.save_counter % 10 == 0:
+            self.save_model()
         
         if path:
             logging.debug(f"[NAVIGATOR] Path: {src_mac} -> {dst_mac} via {path}")

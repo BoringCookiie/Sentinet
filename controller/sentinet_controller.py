@@ -82,6 +82,7 @@ class SentinetController(app_manager.RyuApp):
         # =================================================================
         self.active_alerts = {}    # {(src, dst): expiry_timestamp}
         self.blocked_flows = set() # Set of (src, dst) tuples currently blocked
+        self.recent_paths = []     # Track recent Navigator paths
         
         # =================================================================
         # Start Background Threads  
@@ -231,6 +232,12 @@ class SentinetController(app_manager.RyuApp):
                 if out_port is not None:
                     self.logger.debug(f"[NAVIGATOR] Path {path}, using port {out_port}")
                     return out_port
+                if path:
+                    path_str = f"{src_mac} -> {' -> '.join(path)}"
+                    self.recent_paths.append(path_str)
+                    if len(self.recent_paths) > 10:
+                        self.recent_paths.pop(0)
+                    self.logger.debug(f"[NAVIGATOR] Path chosen: {path_str}")
         
         # Fallback: flood to all ports
         return ofproto.OFPP_FLOOD
@@ -415,6 +422,12 @@ class SentinetController(app_manager.RyuApp):
             # Request stats from all switches
             for dpid, dp in self.datapaths.items():
                 self._request_stats(dp)
+            
+            if NAVIGATOR_ENABLED:
+                status = self.navigator.get_status()
+                self.logger.info(f"[NAVIGATOR] Status: {status}")
+                if self.recent_paths:
+                    self.logger.info(f"[NAVIGATOR] Recent paths: {', '.join(self.recent_paths[-5:])}")
             
             hub.sleep(POLL_INTERVAL)
     

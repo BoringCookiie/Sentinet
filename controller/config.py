@@ -36,6 +36,7 @@ NAVIGATOR_ENABLED = True  # Routing AI - Q-Learning path optimization
 # Path to trained model files
 SENTINEL_MODEL_PATH = "../ai_models/sentinel_model.joblib"
 SENTINEL_CLASSIFIER_PATH = "../ai_models/sentinel_classifier.joblib"
+SENTINEL_SCALER_PATH = "../ai_models/sentinel_scaler.joblib"  # Add this line
 NAVIGATOR_MODEL_PATH = "../ai_models/navigator_model.joblib"  # Q-table saved here
 
 # =============================================================================
